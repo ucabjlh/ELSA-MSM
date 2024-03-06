@@ -1,0 +1,447 @@
+# Cleaning script for ELSA vars on AT for model
+
+```{r read in file, echo = FALSE}
+# Git
+    echo "# ELSA-MSM" >> README.md
+    git init
+    git add README.md
+    git commit -m "first commit"
+    git branch -M main
+    git remote add origin https://github.com/ucabjlh/ELSA-MSM.git
+    git push -u origin main
+# Packages
+    suppressWarnings(library(knitr))
+  #  install.packages("rmarkdown")
+    suppressWarnings(library(rmarkdown))
+  #  install.packages("readxl")
+    suppressWarnings(library(readxl))
+  #  install.packages("writexl")
+    suppressWarnings(library(writexl))
+  #  install.packages("openxlsx")
+    suppressWarnings(library(openxlsx))
+  #  install.packages("stringr")
+    suppressWarnings(library(stringr))
+ #   install.packages("dplyr")
+    suppressWarnings(library("dplyr"))
+  #  install.packages(c("survival", "survminer", "ggpubr"))
+    suppressWarnings(library("survival"))
+    suppressWarnings(library("survminer"))
+    suppressWarnings(library("ggpubr"))
+    suppressWarnings(library('mice'))
+
+# Memory
+    if (exists ("elsa")) {
+        print("elsa exists")
+        rm(elsa)} # Clear variable if it exists to avoid memory allocation error
+    if (exists ("elsa0")) {
+        print("elsa0 exists")
+        rm(elsa0)} # Clear variable if it exists to avoid memory allocation error
+    if (exists ("elsa1")) {
+        print("elsa1 exists")
+        rm(elsa1)}
+    if (exists ("elsa_dir")) {
+        print("elsa_dir exists")
+        rm(elsa_dir)} # Clear variable if it exists to avoid memory allocation error  
+    if (exists("elsai")) {
+        print("elsai exists")
+        rm(elsai) }
+    gc() # clear memory
+
+# Read in xlsx
+    elsa_dir <- "C:/Users/Jamie Danemayer/Documents/ELSA/"
+    setwd(elsa_dir)
+    elsa <- read_xlsx(file.path(elsa_dir, "harmonised_at.xlsx"))
+    elsa0 <- as.data.frame(elsa)
+```
+```{r combine cols, echo = FLASE}
+# Remove ineligible data
+    ## Drop if age <50
+        elsa0 <- elsa0[which(elsa0$ragey >49), ]
+    ## Drop if W1 or W2
+        elsa0 <- elsa0[which(elsa0$wave >2), ]
+    ## Drop if <2 waves completed; remove rows with an idauniq value that only appears once in the dataset
+        elsa0 <- elsa0[elsa0$idauniq %in% elsa0$idauniq[duplicated(elsa0$idauniq)],]
+    ## count number of unique individuals
+        elsa0_inds <- unique(elsa0$idauniq)
+        length(elsa0_inds) # 12,614 inds, yes this works
+
+## Age groups
+    elsa0$age5 <- rep(NA, nrow(elsa0))
+    elsa0$age5 <- cut(elsa0$ragey, breaks = c(49, 54, 59, 64, 69, 74, 79, 84, 89, 120), 
+                                    labels = c('50-54', '55-59', '60-64', '65-69', '70-74', '75-79', '80-84', '85-89', '90+'))  
+    elsa0$age10 <- rep(NA, nrow(elsa0))
+    elsa0$age10 <- cut(elsa0$ragey, breaks = c(49, 59, 69, 79, 89, 120), 
+                                    labels = c('50-59', '60-69', '70-79', '80-89', '90+'))   
+
+## Help variable
+    ## Any help w/Mobility ADLs 
+        elsa0$help <- rep('Not asked', nrow(elsa0))
+        elsa0[which((elsa0$hehpa == 'Yes' | elsa0$CaTNo %in% 1:13 | elsa0$catno %in% 1:13)), 'help'] <- 'Yes'
+        elsa0[which((elsa0$hehpa == 'No' | elsa0$CaTNo == 0 | elsa0$catno == 0)), 'help'] <- 'No'
+        elsa0[which(((elsa0$hehpa == '.w' | elsa0$CaTNo == '.w' | elsa0$catno == '.w') & (elsa0$rlowermoba == '1.Yes'))), 'help'] <- 'Missing'
+
+    ## NAs for those with no lowermob difficulty, but with other ADL difficulties, as they are still asked the question 
+        # elsa0[which(elsa0$rlowermob == '0'), 'help'] <- NA
+        # # sum(table(elsa0$hehpa, elsa0$wave))
+        # # sum(table(elsa0$CaTNo, elsa0$wave))
+        # # sum(table(elsa0$catno, elsa0$wave))
+        # table(elsa0$hehpa, elsa0$wave)
+        # str(elsa0)
+
+
+## MAP use variable
+    ## Create an 'any use' variable for MAPs 
+        elsa0$mapa <- rep('2. Not asked/Not Applicable', nrow(elsa0))
+        # Affirmative use
+        elsa0[which(elsa0$heaidca == 'Mentioned' | elsa0$heaidzi == 'Mentioned' |
+                    elsa0$heaidmw == 'Mentioned' | elsa0$heaidew == 'Mentioned' |
+                    elsa0$heaidbu == 'Mentioned' | elsa0$heaidcr == 'Mentioned'), 'mapa'] <- '1. Use' 
+        # Missing
+        elsa0[which(elsa0$heaidca %in% c("Don't know", "Refusal") & elsa0$heaidzi %in% c("Don't know", "Refusal") & 
+                    elsa0$heaidmw %in% c("Don't know", "Refusal") & elsa0$heaidew %in% c("Don't know", "Refusal") & 
+                    elsa0$heaidbu %in% c("Don't know", "Refusal") & elsa0$heaidcr %in% c("Don't know", "Refusal")), 'mapa'] <- '3. Missing'
+
+        # Something seems to have changed with how this was asked between waves 5 and 6, wherein possibly NAs were categorised as missing. If you added these to the 'not mentioned' in heaid96 for waves 3-5, the rest of the numbers would make sense. 
+        # the sum of the MAPA table is less than the total for the dataset, so there are some absent/blank values for some reason. I guess NAs?
+        # So, first check the wave 5 and 6 flow chart. See if it's obvious what's going on. 
+        # Second, complete the rest of the data cleaning and then remove missing but ONLY for rlowermoba = y, and see how it changes the sample. Hopefully the number missing FOR THOSE FOR WHOM THE QUESTION IS RELEVANT is small, and it is indeed just NAs that are absent from the table.  
+
+        # SO the questionnaire does change from 5 to 6, from only asking ADL diff about MAP, to asking everyone. So can't use the latter waves of the data unless i combine the not asked/not applicable with not using. In any relevant case, the individuals aren't using the AT. And only 2 people with lowermoba weren't asked about AT for some reason, so I will reassign those to missing. And move on with the definition of: Use and NA (or, not using, within the population of lowermoba diff). 
+
+## Employment variable
+    elsa0[which(elsa0$rlbrf_e %in% c('2.self-employed', '3.unemployed', '7.looking after home or family')), 'rlbrf_e'] <- '2.not employed'
+    elsa0[which(elsa0$rlbrf_e %in% c('4.partly ret', '5.retired')), 'rlbrf_e'] <- '3.retired'
+    elsa0[which(elsa0$rlbrf_e == '6.disabled'), 'rlbrf_e'] <- '4.disabled'
+## Region variable
+    # put gor values into GOR column
+    elsa0[which(is.na(elsa0$GOR)), 'GOR'] <- elsa0[which(is.na(elsa0$GOR)), 'gor'] # in GOR col where is.na, replace GOR with gor, when there is no GOR yay
+    colnames(elsa0)[colnames(elsa0) == 'GOR'] <- 'region'
+    table(elsa0$region, elsa0$wave)
+    # Fix names of regions
+    elsa0[which(elsa0$region == 'A' | elsa0$region == 'E12000001'), 'region'] <- 'North East'
+    elsa0[which(elsa0$region == 'B' | elsa0$region == 'E12000002'), 'region'] <- 'North West'
+    elsa0[which(elsa0$region == 'D' | elsa0$region == 'E12000003'), 'region'] <- 'Yorkshire and the Humber'
+    elsa0[which(elsa0$region == 'E' | elsa0$region == 'E12000004'), 'region'] <- 'East Midlands'
+    elsa0[which(elsa0$region == 'F' | elsa0$region == 'E12000005'), 'region'] <- 'West Midlands'
+    elsa0[which(elsa0$region == 'G' | elsa0$region == 'E12000006'), 'region'] <- 'East of England'
+    elsa0[which(elsa0$region == 'H' | elsa0$region == 'E12000007'), 'region'] <- 'London'
+    elsa0[which(elsa0$region == 'J' | elsa0$region == 'E12000008'), 'region'] <- 'South East'
+    elsa0[which(elsa0$region == 'K' | elsa0$region == 'E12000009'), 'region'] <- 'South West'
+    elsa0[which(elsa0$region %in% c('S92000003', 'S99999999', 'W92000004', 'W99999999', 'W', 'S', '.w')), 'region'] <- 'not in england' # getting dropped anyways so doesn't matter 
+    # Remove those 'not in england'
+        # table(elsa0$region, elsa0$wave)
+        # sum(table(elsa0$region, elsa0$wave))
+        elsa0 <- elsa0[which(elsa0$region != 'not in england'), ]
+        # sum(table(elsa0$region, elsa0$wave))
+
+## Education variable
+    # 'Impute' values from year left education # redo for .w
+        elsa0[which(elsa0$raeducl == '.w' & elsa0$raedyrs_e %in% c('0.none', '1.age 14 or under')), 'raeducl'] <- '1.less than upper secondary'
+        elsa0[which(elsa0$raeducl == '.w' & elsa0$raedyrs_e %in% c('2.age 15', '3.age 16', '4.age 17', '5.age 18')), 'raeducl'] <- '2.upper secondary and vocational training'
+        elsa0[which(elsa0$raeducl == '.w' & elsa0$raedyrs_e %in% c('6.age 19 or over')), 'raeducl'] <- '3.tertiary'
+
+    # # Actually impute the remaining missing values 
+    #         elsa_i <- elsa0[, c('ragender', 'ragey', 'region', 'raedyrs_e', 'rlbrf_e', 'raeducl')]
+
+    #         # Convert to factors, which are ... nobody knows ... characters as repeated chunks, not just text. Good for categorical data with limited number of different things. Not used all the time because they are a huge pain in the ass and never work the way you think they will. 
+    #             col_names <- c('ragender', 'region', 'raedyrs_e', 'rlbrf_e', 'raeducl')
+    #             elsa_i[col_names] <- lapply(elsa_i[col_names] , factor)
+    #         # Convert missing to NA so mice can impute on it
+    #             elsa_i[which(elsa_i$raeducl == '.w'), 'raeducl'] <- NA
+    #         # Himpute
+    #             imp <- mice(elsa_i)
+    #             summary(elsa_i)
+    #             summary(complete(imp))
+    #             elsa_i1 <- complete(imp)
+    #         # Check imputation 
+    #             # plot(imp)
+    #             # imp$meth
+    #             # table(elsa_i1$raeducl, elsa_i1$ragender)
+    #             # table(elsa_i1$raeducl, elsa0$ragender) # Shows everything still aligns by using a col from the original dataset
+    #         # Return to elsa0
+    #             elsa0$raeducl <- elsa_i1$raeducl
+    # Binarize education variable 
+        # elsa0 <- as.data.frame(elsa0, stringsAsFactors=FALSE)
+        elsa0[which(elsa0$raeducl == '1.less than upper secondary'), 'raeducl'] <- 'low'
+        elsa0[which(elsa0$raeducl %in% c('2.upper secondary and vocational training', '3.tertiary')), 'raeducl'] <- 'high'
+        # check: table(elsa0$raeducl)
+
+
+## Loneliness variable
+    elsa0$loneliness <- rep(NA, nrow(elsa0))
+    elsa0$lc <- rep(NA, nrow(elsa0))
+    elsa0$ll <- rep(NA, nrow(elsa0))
+    elsa0$li <- rep(NA, nrow(elsa0))
+    # rcomplac
+        elsa0[which(elsa0$rcomplac == '1.hardly ever or never'), 'lc'] <- 1
+        elsa0[which(elsa0$rcomplac == '2.some of the time'), 'lc'] <- 2
+        elsa0[which(elsa0$rcomplac == '3.often'), 'lc'] <- 3
+        elsa0[which(elsa0$rcomplac == '.w'), 'lc'] <- 0
+        # table(elsa0$lc)
+    # rleftout
+        elsa0[which(elsa0$rleftout == '1.hardly ever or never'), 'll'] <- 1
+        elsa0[which(elsa0$rleftout == '2.some of the time'), 'll'] <- 2
+        elsa0[which(elsa0$rleftout == '3.often'), 'll'] <- 3
+        elsa0[which(elsa0$rleftout == '.w'), 'll'] <- 0
+    # risolate
+        elsa0[which(elsa0$risolate == '1.hardly ever or never'), 'li'] <- 1
+        elsa0[which(elsa0$risolate == '2.some of the time'), 'li'] <- 2
+        elsa0[which(elsa0$risolate == '3.often'), 'li'] <- 3
+        elsa0[which(elsa0$risolate == '.w'), 'li'] <- 0
+        table(elsa0$li)
+    # Actually impute the remaining missing values 
+        elsa_i <- elsa0[, c('ragender', 'ragey', 'region', 'raeducl', 'rlbrf_e', 'lc', 'll', 'li')]
+
+        # Convert to factors, which are ... nobody knows ... characters as repeated chunks, not just text. Good for categorical data with limited number of different things. Not used all the time because they are a huge pain in the ass and never work the way you think they will. 
+            col_names <- c('ragender', 'region', 'rlbrf_e', 'raeducl')
+            elsa_i[col_names] <- lapply(elsa_i[col_names] , factor)
+        # Convert missing to NA so mice can impute on it
+            elsa_i[which(elsa_i$lc == '0'), 'lc'] <- NA
+            elsa_i[which(elsa_i$ll == '0'), 'll'] <- NA
+            elsa_i[which(elsa_i$li == '0'), 'li'] <- NA
+        # Himpute
+            imp <- mice(elsa_i)
+            summary(elsa_i)
+            summary(complete(imp))
+            elsa_i1 <- complete(imp)
+        # Check imputation 
+            # plot(imp)
+            # imp$meth
+             table(elsa_i1$ll, elsa_i1$ragender)
+             table(elsa_i1$ll, elsa0$ragender) # Shows everything still aligns by using a col from the original dataset
+        # Return to elsa0
+            elsa0$ll <- elsa_i1$ll
+            elsa0$lc <- elsa_i1$lc
+            elsa0$li <- elsa_i1$li
+
+    # sum across cols
+        elsa0$loneliness <- rowSums(elsa0[, c("lc", "ll", "li")])
+        # table(elsa0$loneliness, elsa0$wave)
+    # dichotomize
+        elsa0$lone2 <- rep(NA, nrow(elsa0))
+        elsa0[which(elsa0$loneliness >= 6), 'lone2'] <- '2.High'
+        elsa0[which(elsa0$loneliness < 6), 'lone2'] <- '1.Low'
+## Social isolation variable 
+    # # Sum across cols
+    #     elsa0$isol5 <- rep(0, nrow(elsa0))
+    #     elsa0$isol5 <- apply(elsa0, 1, function(x) sum(c(x['scorg'] == 'None', # No social organisation membership
+    #                                                      x['couple'] == 'Neither', # Neither married nor cohabitating 
+    #                                                      x['cntk'] == 'less than monthly', # kids
+    #                                                      x['cntr'] == 'less than monthly', # relatives
+    #                                                      x['cntf'] == 'less than monthly' # friends
+    #                                                      ))) # weekly contact with friends. function(x) means for every 1 row, do function(x)
+    #     elsa0[which(elsa0$scorg9 == '1.yes' & elsa0$couple == 'Neither' &
+    #                 elsa0$cntk == 'less than monthly' & elsa0$cntr == 'less than monthly' & elsa0$cntf == 'less than monthly'), ]
+
+## Unmet need variable, from rlowermoba and mapa
+    # sum(table(elsa0$rlowermoba, elsa0$wave))
+    elsa0$unmet <- rep(NA, nrow(elsa0))
+    elsa0[which(elsa0$rlowermoba == '1.Yes' & elsa0$mapa == '2. Not asked/Not Applicable'), 'unmet'] <- '1'
+    elsa0[which(elsa0$rlowermoba == '1.Yes' & elsa0$mapa == '1. Use'), 'unmet'] <- '0'
+
+## State variable, from rlowermoba and unmet need
+    # Create a variable that switches over if/once someone has ever needed AT
+        elsa0$prev_need <- rep(0, nrow(elsa0))
+
+        for (p in unique(elsa0$idauniq)) {
+            p_rows <- which(elsa0$idauniq == p)
+            # Start with no need and no previous need
+            had_need <- FALSE
+
+            for (p_row in p_rows) {
+                # Go through each row with this ID
+                if (had_need) {
+                    # If they already had need, then just set this to 1
+                    elsa0[p_row, 'prev_need'] <- 1
+                } else {
+                    # Otherwise, we need to check if need has arisen
+                    if (elsa0[p_row, 'rlowermoba'] == '1.Yes') { # do this by unique id; once/if they have a need, this ticks over to 1 and stays that way
+                        # Set this row's prev_need to 1 and set had_need to TRUE so all subsequent rows can be set to 1
+                        elsa0[p_row, 'prev_need'] <- 1
+                        had_need <- TRUE
+                    }
+                }
+            }
+        }
+
+    for (q in unique(elsa0$idauniq)) {
+        # Find rows that have been in state 4 but not states 2 or 3
+        q_rows <- elsa0[which(elsa0$idauniq == q), ]
+        if (4 %in% unique(q_rows$state) & !(2 %in% unique(q_rows$state) | 3 %in% unique(q_rows$state))) {
+            print(q)
+        }
+    }
+
+    # Define states
+        elsa0$state <- rep(NA, nrow(elsa0))
+        # No current or previous AT need
+        elsa0[which(elsa0$rlowermoba == '0.No' & elsa0$prev_need == 0), 'state'] <- 1
+        # Current unmet AT need
+        elsa0[which(elsa0$rlowermoba == '1.Yes' & elsa0$unmet == 1), 'state'] <- 2
+        # Current met AT need
+        elsa0[which(elsa0$rlowermoba == '1.Yes' & elsa0$unmet == 0), 'state'] <- 3
+        # No current, but previous, AT need
+        elsa0[which(elsa0$rlowermoba == '0.No' & elsa0$prev_need == 1), 'state'] <- 4
+ 
+## Create a time-since-baseline timescale to use
+    # Create a variable for the first year each idauniq appears in the data
+        # Write a loop to paste the first value from riwindy for an idauniq for all idauniq rows
+            elsa0$first_year <- rep(0, nrow(elsa0))
+            for (y in unique(elsa0$idauniq)) {
+                this_id <- elsa0[which(elsa0$idauniq == y), ] # create a mini dataset for each individual :O
+                first_year <- min(this_id$riwindy) # Take the first/minimum value for riwindy
+                elsa0[which(elsa0$idauniq == y), 'first_year'] <- first_year # Paste this value into the first_year column for all rows with this idauniq
+                # elsa0 indicates we're applying the change to the main df
+                }
+    # Calculate time since baseline
+        elsa0$time <- elsa0$riwindy - elsa0$first_year
+        table(elsa0$time, elsa0$wave)
+
+## Lower mobility variable
+    # Future me is having issues with the scale of this in the model, so let's try making it char/cat 
+    elsa0[which(elsa0$rlowermob == 0), 'rlowermob'] <- '0.none'
+    elsa0[which(elsa0$rlowermob == 1), 'rlowermob'] <- '1.one'
+    elsa0[which(elsa0$rlowermob == 2), 'rlowermob'] <- '2.two'
+    elsa0[which(elsa0$rlowermob == 3), 'rlowermob'] <- '3.three'
+    elsa0[which(elsa0$rlowermob == 4), 'rlowermob'] <- '4.four'
+## Grab non-redundant colnames 
+    elsa1 <- elsa0[, c('idauniq', 'wave', 'inw', 'riwstat', 'riwindy', 
+                       'ragey', 'age10', 'age5', 'ragender', 
+                       'raeducl', 'rlbrf_e', 'region', 
+                       'rcomplac', 'rleftout', 'risolate', 'lc', 'll', 'li', 'lone2',
+                       'rlowermob', 'rlowermoba', 
+                       'help', 'mapa', 'unmet', 'state', 'time')]
+# Save sample
+     we0 <- createWorkbook()
+     addWorksheet(we0, sheetName = "ELSA") 
+     writeDataTable(we0, sheet = "ELSA", x = as.data.frame(elsa1), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+     saveWorkbook(we0, 'elsa.xlsx', overwrite = T)
+     # table(elsa1$state)
+```
+```{r subset complete data, echo = FALSE}
+# Remove missing/incomplete
+    # Initial count of individuals
+        elsa1_inds <- unique(elsa1$idauniq)
+        length(elsa1_inds) # 12,597, with full loneliness vars imputation, and education age -> raeducl 'imputation'
+        nrow(elsa1) # 63,314
+
+    # Count missing outcome (MAPA is the outcome, not lowermoba or unmet (because unmet is just based on mapa))
+        elsa1_outcome <- elsa1[which(elsa1$mapa != '3. Missing'), ]
+        elsa1_outcome_inds <- unique(elsa1_outcome$idauniq)
+        length(elsa1_outcome_inds) # 12,597
+        nrow(elsa1_outcome) # 63,302 so 12 waves have mapa missing, but no individuals are entirely always missing it
+
+    # Count missing covars
+        elsa1_covars <- elsa1[which(elsa1$rlowermoba != '.w' & elsa1$rlbrf_e != '.w' & elsa1$raeducl != '.w' & elsa1$help != 'Missing'), ]
+        elsa1_covars_inds <- unique(elsa1_covars$idauniq)
+        length(elsa1_covars_inds) # 12,576
+        nrow(elsa1_covars) # 62,811
+
+    # Drop wave if missing either outcome or covars (_m - adjusted for missing)
+        elsa1_m <- elsa1[which(elsa1$mapa != '3. Missing' & elsa1$rlowermoba != '.w' & elsa1$rlbrf_e != '.w' & elsa1$raeducl != '.w' & elsa1$help != 'Missing'), ]
+        elsa1_m_inds <- unique(elsa1_m$idauniq)
+        length(elsa1_m_inds) # 12,576
+        nrow(elsa1_m) # 62,805
+        length(elsa1_m_inds)/length(elsa1_inds) # 0.998
+        nrow(elsa1_m)/nrow(elsa1) # 0.992
+
+    # Drop individual if <2 waves per id (_w - adjusted for number of waves)
+        elsa1_m_w <- elsa1_m[elsa1_m$idauniq %in% elsa1_m$idauniq[duplicated(elsa1_m$idauniq)],] 
+        elsa1_m_w_inds <- unique(elsa1_m_w$idauniq)
+        length(elsa1_m_w_inds) # 12,532
+        nrow(elsa1_m_w) # 62,761
+
+# Save model cohort
+     we1 <- createWorkbook()
+     addWorksheet(we1, sheetName = "ELSA") 
+     writeDataTable(we1, sheet = "ELSA", x = as.data.frame(elsa1_m_w), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+     saveWorkbook(we1, 'elsa.xlsx', overwrite = T)
+```
+```{r describe model cohort, echo = FALSE}
+# Summarise at baseline (for entry into the study)
+    # Grab the first instance of each unique ID and save as a separate dataset
+        elsai <- elsa1_m_w[match(unique(elsa1_m_w$idauniq), elsa1_m_w$idauniq), ]
+
+# Create a table
+    # Package
+        # install.packages("table1")
+        library('table1')
+    # Age
+        label(elsai$age10) <- 'Age (10-year groups)'
+    # Sex
+        label(elsai$ragender) <- 'Sex'
+        elsai[which(elsai$ragender == '1.man'), 'ragender'] <- 'Male'
+        elsai[which(elsai$ragender == '2.woman'), 'ragender'] <- 'Female'
+    # Education
+        label(elsai$raeducl) <- 'Education'
+        elsai[which(elsai$raeducl == 'low'), 'raeducl'] <- 'Less than upper secondary'
+        elsai[which(elsai$raeducl == 'high'), 'raeducl'] <- 'Upper secondary or greater'
+    # Employment
+        label(elsai$rlbrf_e) <- 'Employment'
+        elsai[which(elsai$rlbrf_e == '1.employed'), 'rlbrf_e'] <- 'Employed'
+        elsai[which(elsai$rlbrf_e %in% c('2.not employed')), 'rlbrf_e'] <- 'Not employed'
+        elsai[which(elsai$rlbrf_e == c('3.retired')), 'rlbrf_e'] <- 'Retired'
+        elsai[which(elsai$rlbrf_e == '4.disabled'), 'rlbrf_e'] <- 'Disabled'
+
+    # Region
+        label(elsai$region) <- 'Region'
+    # Mobility
+        elsai$rlowermob <- as.character(elsai$rlowermob)
+        label(elsai$rlowermob) <- 'Difficulty with lower mobility ADLs (#)'
+    # Help
+        label(elsai$help) <- 'Personal assistance with ADLs'
+    # Loneliness
+        label(elsai$lone2) <- 'Loneliness'
+        elsai[which(elsai$lone2 == '1.Low'), 'lone2'] <- 'Low'
+        elsai[which(elsai$lone2 == '2.High'), 'lone2'] <- 'High'
+        # This varies ever so slightly b/c of the multiple imputation each time it's re-run: table(elsai$lone2)
+
+    # Make da table
+            t1 <- table1(~ age10 + ragender + raeducl + rlbrf_e + region +
+                    rlowermob + help + lone2, data=elsai)
+
+# Save output table
+    b1 <- createWorkbook()
+    addWorksheet(b1, sheetName = "baseline") 
+    writeDataTable(b1, sheet = "baseline", x = as.data.frame(t1), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+    saveWorkbook(b1, 'b1.xlsx', overwrite = T)
+```
+```{r questions, echo = FALSE}
+# Questions for Madamoiselle: 
+
+    ## What to do with <10 missing or 'don't know' type responses? is it worth imputation? Get rid.
+    ## Why are so many missing education? Impute this; take age at finishing education to cut into education categories (eg finishing at 16); raedyears something like that
+    ## Are spouses included??
+    ## Do you like my table 1 top lay out?
+    # the best thing to do to examine the effect of different covars is to run different models, all adjusted for the same things like age and sex
+    # the covars become the exposures in each model. nothing preceeds gender on the causal pathway. want to adjust for age (effect modifier). stratifying by n of MDs would make sense.  
+    ## Can I have your table function? *need to ensure tables are calculated by ID not by observations # yes
+    ## What metrics are useful to report as I add covars to the model? None! yay
+
+# Questions for madam doctor: 
+        # BASICALLY is there an industry standard way to tick through small amounts of missing data? 
+        # can divide into missing exposures, outcomes, and covars 
+
+        # 1. if a person is missing a var for only one wave, do you remove the whole person? Would you impute from other waves? 
+        # drop the wave, or impute, but not for the outcome. 
+
+        # Also is there an order to this? eg. remove waves with missing rlowermob, then remove for missing school (after edyears migration), then if <2 complete waves remaining? 
+        # nop b/c looking at overall ss
+
+        # 2. missing data <5% is ok to just remove - is that out of total observations or total individuals? Assume the proportion would change as some obs/inds get dropped due to missing data in other respects (so the denominator is changing)? 
+        # can do either, see if it's eg slightly over 5% of inds, but slightly under 5% of obs, go with what works. inds probably better tho. 
+
+        # 3. If data are missing for eg. contacting children via text, but not for others, do you remove the whole ind? 
+        # would look at the og vars, not the derived vars 
+
+        # 4. Data came in from stata with -2 and -3 as values,  but I added all vars to the Missingness line; now no missing data are coming in
+        # for some vars, what have I done...
+
+        # for imputation, can regress on covars or impute mean value from cohort 
+        # has to be 95% complete observations; so remove anyone with any missing var & see change in sample size 
+
+        # loneliness is the outcome-ish of social isolation so perhaps ok to use; social isolation does indeed hava a probhbiive amount of missing data. 
+
+
+```
+

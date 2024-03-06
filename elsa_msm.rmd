@@ -1,0 +1,130 @@
+```{r tutorial, echo = FALSE}
+# Install packages
+    install.packages("msm")
+    library(msm)
+
+# Load data
+    # Data are specified as a series of observations, grouped by patient. 
+    # At minimum, needs time of observation and observed state of the process.
+    # Observations should be ordered by time, within subject. 
+    cav[1:21, ]
+
+# Frequency table of pairs of consecuitive states
+    # Counts over all individuals, for each state r and s, the number of times an individual had an observation of state r followed by an observation of state s. 
+    # State s across the top has an extra col, for including death as a state. 
+    statetable.msm(state, PTNUM, data=cav)
+
+# Tell msm what allowed transitions are
+    # Define a matrix the same size as Q; Positions that aren't 0 are allowed transitions, containing an initial value for the corresponding transition intensity. 
+    Q <- rbind (c(0, 0.25, 0, 0.25),
+                c(0.166, 0, 0.166, 0.166),
+                c(0, 0.25, 0, 0.25),
+                c(0, 0, 0, 0))  
+    
+# Specifying initial values
+    # To get default initial values in the call to msm, along with a qmatrix whose nonzero elements are the allowed transitions, somehow use (gen.inits = TRUE)
+    # Or, to get this matrix of initial values explicitly...
+    Q.crude <- crudeinits.msm(state ~ years, PTNUM, data=cav, qmatrix = Q) 
+
+# Running MSM
+    # Now that we have dataset, matrix of allowed transitions, and matrix of initial values, we can run msm
+    # Model 1: simple bi-directional model (transitions are allowed in both directions between states)
+    cav.msm <- msm(state ~ years, subject = PTNUM, data = cav, qmatrix = Q, deathexact = 4)
+    # To investigate optimisation...
+    help(optim)
+
+# Showing results
+    # Shows maximum likelihood estimates and 95% CIs
+    cav.msm
+
+# Model effect of explanatory variables on rates of transition
+    # ...using a proportional intensities model
+    # Intensity matrix Q(z) depends on covariate vector z
+    # By default, all linear covariate effects are initialised to zero
+    # To specify different initial values, use covinits argument (described in help(msm))
+    # Initial values given in the qmatrix represent the intensities with covariate balues set to their means in the data. 
+    # Model 2 specifies sex as a covariate
+    cavsex.msm <- msm(state ~ years, subject = PTNUM, data = cav, qmatrix = Q, deathexact = 4, covariates = ~ sex)
+    # printing the msm object now displays the estimated covariate effects and their 95% CIs
+    cavsex.msm
+    # To extract separate intensity matries for male and female participants, use...
+    qmatrix.msm(cavsex.msm, covariates = list (sex = 0))
+    qmatrix.msm(cavsex.msm, covariates = list (sex = 1))
+
+# Fixing parameters
+    # For exploration, may want to fit a model assuming that some parameters are fixed and estimate the remaining parameters
+    # fixedpars argument specifies which parameters are fixed.  
+    cav4.msm <- msm(state ~ years, subject = PTNUM, data = cav,
+                    qmatrix = Q, deathexact = 4, 
+                    control = list(trace = 2, REPORT = 1), 
+                    fixedpars = c(6, 7))
+
+# Extract information
+    # for example, for plotting graphs or generating summary tables
+    qmatrix.msm # for estimated transition intensity matrix and CIs for a given set of covariates
+    pmatrix.msm(cav.msm, t = 10) # for transition probability matrix P(t) within a given time
+    # mean sojourn times (time spent in a state)
+    sojourn.msm(cav.msm)
+    # probability that each state is next. These are different from the transition probabilities.
+    pnext.msm(cav.msm)
+    # total length of stay (this one is really cool)
+    totlos.msm(cav.msm)
+    # expected first passage times (aka hitting time); time until the process first enters a given state or set of states
+    help(efpt.msm)
+    # expected number of visits (to a state)
+    help(envisits.msm)
+    # ratio of transition intensities; 
+    help(qratio.msm)
+    # hazard ratios for transition; function gives estimated hazard ratios corresponding to each covariate efect on transition intensities
+    hazard.msm(cavsex.msm)
+    # Set covariate values to their means in the data (as all extractor functions take an agrument called covariates, which would need to be omitted)
+    qmatrix.msm(cav.msm)
+    # Specify covariates explicitly as a list
+    qmatrix.msm(cavsex.msm, covariates = 0)
+    # Use values of categorical covariates
+    # qmatrix.msm(example.msm, covariates = list(age = 60, smoke = "CURRENT"))
+
+# Survival plots
+    # predict survival probability for pts in increasingly severe states of disease, for some time t in the future
+    # This can be obtained directly from the transition probability matrix P(t)
+    plot(cav.msm, legend.pos=c(8, 1))
+
+# Bootstrapping
+    # to enable bootstrap refitting of msm models, to estimate uncertainty
+    # boot.msm 
+    # q.list <- boot.msm(cav.msm, stat = function(x) {qmatrix.msm(x)$estimates})
+
+# Convergence failure
+    # Model simplification; not too many parameters
+    # Initial values; are sensible; run the model on several different initial values to ensure estimation ahs converged to a global (rather than local) optimum
+    # Scaling; apply a scaling factor to normalise the likelihood
+    # Convergence criteria; address 'fasle convergence'
+    # Choice of algorithm; 
+
+# Model assessment
+    # observed and expected prevalence; not always easy to determine how well a fitted msm describes an irregularly-observed process
+    # If there were times at which all individuals were observed, then the fit of the expected numbers in each state (or prevalences) can be assessed directly at those times.
+    # If there are no such times, then the expected prevalences can be compared with the observed prevalences at the last time at which each individual was observed.
+    # prevalence.msm # constructs a table of observed and expected ns and percents of individuals in each state at a set of times. 
+    options(digits = 3)
+    prevalence.msm(cav.msm, times=seq(0,20,2))
+    plot.prevalence.msm(cav.msm, mintime=0, maxtime=20) # see where the model is over/estimating mortality, and from what point
+    # one cause of poor model fit is the failure of the Markov assumption, that is, the transition intensities may depend on the time spent in the current state (a semi-Markov process) or other characteristics of the processs history. Semi-Markov models may in principle be fitted to this type of data using phase-type distrbutions. See help(msm) for details
+    # Pearson-type goodness-of-fit; if true transition times are unknown, and data consist of observations of the process at arbitrary times which differ between individuals. Only advisable if observation times are close together. An alternative is to construct tables of observed and expected numbers of transitions, leading to a formal test of goodness of fit, analogous to pearson x2 test for contingency tables. 
+    options(digits = 2)
+    pearson.msm(cav.msm, timegroups=2, 
+                transitions=c(1,2,3,4,5,6,7,8,9,9,9,10))
+
+# Fitting misclassification models with msm
+# Effects of covariates on misclassification rates
+# Extractor functions for misclassified models
+# Recreating the path through underlying states
+    # Determining the udnerlying states that are most likely to have given rise to the observations; Viterbi algorithm for discrete-time hidden Markov chains. 
+# Fitting general hidden markov models with msm
+
+
+
+
+
+
+```
