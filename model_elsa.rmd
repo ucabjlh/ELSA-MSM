@@ -1,0 +1,801 @@
+---
+title: "Elsa MSM"
+output: github_document
+---
+
+```{r setup}
+# install packages
+  # install.packages("msm")
+    suppressWarnings(library(msm))
+  # install.packages("knitr")
+    suppressWarnings(library(knitr))
+  #  install.packages("rmarkdown")
+    suppressWarnings(library(rmarkdown))
+  #  install.packages("readxl")
+    suppressWarnings(library(readxl))
+  #  install.packages("writexl")
+    suppressWarnings(library(writexl))
+  #  install.packages("openxlsx")
+    suppressWarnings(library(openxlsx))
+  # install.packages("ggplot2")
+    suppressWarnings(library(ggplot2))
+```
+```{r memory allocation, echo = FALSE}
+# Remove models 
+  gc()
+```
+```{r load data, echo = FALSE}
+# Load data
+    # Data are specified as a series of observations, grouped by patient. 
+    # At minimum, needs time of observation and observed state of the process.
+    # Observations should be ordered by time, within subject. 
+    elsa_dir <- "C:/Users/Jamie Danemayer/Documents/ELSA/"
+    setwd(elsa_dir)
+    elsa <- read_xlsx(file.path(elsa_dir, "elsa.xlsx")) # change number as model dataset is updated
+    elsa <- as.data.frame(elsa)
+```
+```{r q matrix, echo = FALSE}
+# Frequency table of pairs of consecuitive states
+    Q <- statetable.msm(state, idauniq, data=elsa) 
+    # Write to excel
+      # write.xlsx(Q, file = "Q.xlsx", sheetName = "Q", colNames = TRUE, rowNames = TRUE, append = FALSE)
+    # Specify no absorbing state
+      # To specify a model with no absorbing state, you need to define the transition matrix (Q) appropriately. In the given document, it is mentioned that the diagonal entries of Q are defined as minus the sum of all the other entries in the row. Therefore, to specify a model with no absorbing state, you can set all the diagonal entries of Q to zero. This ensures that there are no transitions from any state to an absorbing state.
+      # Q <- Q - diag(diag(Q)) # this is the same as Q <- Q - diag(diag(Q))
+      qt <- rbind(c(1, 1, 1, 0),
+                  c(0, 1, 1, 1),
+                  c(0, 1, 1, 1), 
+                  c(0, 1, 1, 1))
+```
+```{r prop hazard test, echo = FALSE}
+# run cox proportional hazard for ELSA data
+  ## install packages
+      library(survival)
+      library(ranger)
+      library(ggplot2)
+      library(dplyr)
+      library(ggfortify)
+  ## Fit a CPH that makes use of all the covariates in the dataset
+      # Change NAs to 0 in unmet
+        elsau <- elsa
+        elsau$unmet[is.na(elsau$unmet)] <- 0
+        elsau$unmet <- as.numeric(elsau$unmet) # format status var properly as numeric
+        sum(table(elsau$unmet))#, elsa$rlowermob)
+        nrow(elsa)
+        elsau$rlowermob <- as.character(elsau$rlowermob) # format level of difficulty var properly as character
+      # CPH 
+        cph_all <- coxph(Surv(time, unmet) ~ ragender + age10 + region + rlbrf_e + raeducl + rlowermob + help + lone2, data = elsau)
+          # treating the outcome as unmet need (not transitioning to it, just having it)
+        summary(cph_all)
+        cox_fit <- survfit(cph_all)
+        autoplot(cox_fit)
+
+```
+```{r age specific tp, echo = FALSE}
+# Running MSM w/demographic covars
+  elsa_d.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                      gen.inits = T, control = list(fnscale = 2000), # scaling factor only used to help the optimization algorithm
+                      covariates = ~ age10 + region + rlowermob + help + lone2 +
+                                      raeducl + rlbrf_e) # Demographics    
+
+  ## graph hrs 
+      hd <- as.data.frame(hazard.msm(elsa_d.msm))
+      hd_rows <- c('1-2', '1-3',
+                  '2-3', '2-4', 
+                  '3-2', '3-4', 
+                  '4-2', '4-3')
+      hd <- cbind(hd_rows, hd)
+      colnames(hd) <- c('transition', 'woman.hr', 'woman.l', 'woman.u',
+                        '60.hr', '60.l', '60.u',
+                        '70.hr', '70.l', '70.u',
+                        '80.hr', '80.l', '80.u', 
+                        '90.hr', '90.l', '90.u')
+      hd_plot <- ggplot(hd, aes(x=transition, y=woman.hr)) + # , group=supp, color=supp)) + 
+                  geom_pointrange(aes(ymin=woman.l, ymax=woman.u))  
+  
+  ## Graph pmatrix 
+    pd <- as.matrix(pmatrix.msm(elsa_d.msm))
+    View(pd)
+    pd_plot <- heatmap(pd, Colv = NA, Rowv = NA, scale = "row", col = heat.colors(256), 
+                       xlab = 'To state', ylab = 'From state', main = 'Transition probabilities: Women')
+    ax <- sns.heatmap(pd, annot = TRUE, fmt = 'g')
+# Running MSM with...
+  # Individual age groups, both sexes
+    elsa5 <- elsa[elsa$ragey %in% c(50:54), ]
+    elsa55 <- elsa[elsa$ragey %in% c(55:59), ]
+    elsa6 <- elsa[elsa$ragey %in% c(60:64), ]
+    elsa66 <- elsa[elsa$ragey %in% c(65:69), ]
+    elsa7 <- elsa[elsa$ragey %in% c(70:74), ]
+    elsa77 <- elsa[elsa$ragey %in% c(75:79), ]
+    elsa8 <- elsa[elsa$ragey %in% c(80:84), ]
+    elsa88 <- elsa[elsa$ragey %in% c(85:89), ]
+    elsa9 <- elsa[elsa$ragey %in% c(90:120), ]
+
+    elsa5.msm <- msm(state ~ time, subject = idauniq, data = elsa5, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 4000 and 5...
+    elsa55.msm <- msm(state ~ time, subject = idauniq, data = elsa55, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsa6.msm <- msm(state ~ time, subject = idauniq, data = elsa6, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5  
+    elsa66.msm <- msm(state ~ time, subject = idauniq, data = elsa66, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5  
+    elsa7.msm <- msm(state ~ time, subject = idauniq, data = elsa7, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5  
+    elsa77.msm <- msm(state ~ time, subject = idauniq, data = elsa77, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5  
+    elsa8.msm <- msm(state ~ time, subject = idauniq, data = elsa8, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5  
+    elsa88.msm <- msm(state ~ time, subject = idauniq, data = elsa88, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5  
+    elsa9.msm <- msm(state ~ time, subject = idauniq, data = elsa9, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5  
+    # transition matrices for each age
+      ti5 <- qmatrix.msm(elsa5.msm)
+      ti55 <- qmatrix.msm(elsa55.msm)
+      ti6 <- qmatrix.msm(elsa6.msm)
+      ti66 <- qmatrix.msm(elsa66.msm)
+      ti7 <- qmatrix.msm(elsa7.msm)
+      ti77 <- qmatrix.msm(elsa77.msm)
+      ti8 <- qmatrix.msm(elsa8.msm)
+      ti88 <- qmatrix.msm(elsa88.msm)
+      ti9 <- qmatrix.msm(elsa9.msm)
+      
+      # Sum transition probabilities into state 2
+        sum5 <- sum(ti5[c(1,3,4), 2])
+        sum55 <- sum(ti55[c(1,3,4), 2])
+        sum6 <- sum(ti6[c(1,3,4), 2])
+        sum66 <- sum(ti66[c(1,3,4), 2])
+        sum7 <- sum(ti7[c(1,3,4), 2])
+        sum77 <- sum(ti77[c(1,3,4), 2])
+        sum8 <- sum(ti8[c(1,3,4), 2])
+        sum88 <- sum(ti88[c(1,3,4), 2])
+        sum9 <- sum(ti9[c(1,3,4), 2])
+
+        ti <- rbind(sum5, sum55, sum6, sum66, sum7, sum77, sum8, sum88, sum9)
+        write.csv(ti, file = "ti.csv")
+        plot(ti)   
+        age.groups <- c('50-54', '55-59', '60-64', '65-69', '70-74', '75-79', '80-84', '85-89', '90+')                 
+    
+    # plot(ti, type = "c", 
+    #          #pch = 19, 
+    #          col = "red", xlab = "Age group number", ylab = "Transition intensity to state 2")
+  
+  # Women
+    elsaw5 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(50:54), ]
+    elsaw55 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(55:59), ]
+    elsaw6 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(60:64), ]
+    elsaw66 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(65:69), ]
+    elsaw7 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(70:74), ]
+    elsaw77 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(75:79), ]
+    elsaw8 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(80:84), ]
+    elsaw88 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(85:89), ]
+    elsaw9 <- elsa[elsa$ragender == '2.woman' & elsa$ragey %in% c(90:120), ]
+
+    elsaw5.msm <- msm(state ~ time, subject = idauniq, data = elsaw5, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 4000 and 5...
+    elsaw55.msm <- msm(state ~ time, subject = idauniq, data = elsaw55, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsaw6.msm <- msm(state ~ time, subject = idauniq, data = elsaw6, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsaw66.msm <- msm(state ~ time, subject = idauniq, data = elsaw66, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsaw7.msm <- msm(state ~ time, subject = idauniq, data = elsaw7, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsaw77.msm <- msm(state ~ time, subject = idauniq, data = elsaw77, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsaw8.msm <- msm(state ~ time, subject = idauniq, data = elsaw8, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsaw88.msm <- msm(state ~ time, subject = idauniq, data = elsaw88, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsaw9.msm <- msm(state ~ time, subject = idauniq, data = elsaw9, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    
+    # transition matrices for each age
+      tpw5 <- pmatrix.msm(elsaw5.msm)
+      tpw55 <- pmatrix.msm(elsaw55.msm)
+      tpw6 <- pmatrix.msm(elsaw6.msm)
+      tpw66 <- pmatrix.msm(elsaw66.msm)
+      tpw7 <- pmatrix.msm(elsaw7.msm)
+      tpw77 <- pmatrix.msm(elsaw77.msm)
+      tpw8 <- pmatrix.msm(elsaw8.msm)
+      tpw88 <- pmatrix.msm(elsaw88.msm)
+      tpw9 <- pmatrix.msm(elsaw9.msm)
+      
+      # Sum transition probabilities into state 2
+        sum5 <- sum(tpw5[c(1,3,4), 2])
+        sum55 <- sum(tpw55[c(1,3,4), 2])
+        sum6 <- sum(tpw6[c(1,3,4), 2])
+        sum66 <- sum(tpw66[c(1,3,4), 2])
+        sum7 <- sum(tpw7[c(1,3,4), 2])
+        sum77 <- sum(tpw77[c(1,3,4), 2])
+        sum8 <- sum(tpw8[c(1,3,4), 2])
+        sum88 <- sum(tpw88[c(1,3,4), 2])
+        sum9 <- sum(tpw9[c(1,3,4), 2])
+
+        tpw <- rbind(sum5, sum55, sum6, sum66, sum7, sum77, sum8, sum88, sum9)
+        write.csv(tpw, file = "tpw.csv")
+        plot(tpw)
+
+  # Men
+    elsam5 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(50:54), ]
+    elsam55 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(55:59), ]
+    elsam6 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(60:64), ]
+    elsam66 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(65:69), ]
+    elsam7 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(70:74), ]
+    elsam77 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(75:79), ]
+    elsam8 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(80:84), ]
+    elsam88 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(85:89), ]
+    elsam9 <- elsa[elsa$ragender == '1.man' & elsa$ragey %in% c(90:120), ]
+
+    elsam5.msm <- msm(state ~ time, subject = idauniq, data = elsam5, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 4000 and 5...
+    elsam55.msm <- msm(state ~ time, subject = idauniq, data = elsam55, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsam6.msm <- msm(state ~ time, subject = idauniq, data = elsam6, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsam66.msm <- msm(state ~ time, subject = idauniq, data = elsam66, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsam7.msm <- msm(state ~ time, subject = idauniq, data = elsam7, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsam77.msm <- msm(state ~ time, subject = idauniq, data = elsam77, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsam8.msm <- msm(state ~ time, subject = idauniq, data = elsam8, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsam88.msm <- msm(state ~ time, subject = idauniq, data = elsam88, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    elsam9.msm <- msm(state ~ time, subject = idauniq, data = elsam9, qmatrix = qt,
+                        gen.inits = T, control = list(fnscale = 5)) # Converges at fnscale = 5
+    
+    # transition matrices for each age
+      tpm5 <- pmatrix.msm(elsam5.msm)
+      tpm55 <- pmatrix.msm(elsam55.msm)
+      tpm6 <- pmatrix.msm(elsam6.msm)
+      tpm66 <- pmatrix.msm(elsam66.msm)
+      tpm7 <- pmatrix.msm(elsam7.msm)
+      tpm77 <- pmatrix.msm(elsam77.msm)
+      tpm8 <- pmatrix.msm(elsam8.msm)
+      tpm88 <- pmatrix.msm(elsam88.msm)
+      tpm9 <- pmatrix.msm(elsam9.msm)
+      
+      # Sum transition probabilities into state 2
+        sum5 <- sum(tpm5[c(1,3,4), 2])
+        sum55 <- sum(tpm55[c(1,3,4), 2])
+        sum6 <- sum(tpm6[c(1,3,4), 2])
+        sum66 <- sum(tpm66[c(1,3,4), 2])
+        sum7 <- sum(tpm7[c(1,3,4), 2])
+        sum77 <- sum(tpm77[c(1,3,4), 2])
+        sum8 <- sum(tpm8[c(1,3,4), 2])
+        sum88 <- sum(tpm88[c(1,3,4), 2])
+        sum9 <- sum(tpm9[c(1,3,4), 2])
+
+        tpm <- rbind(sum5, sum55, sum6, sum66, sum7, sum77, sum8, sum88, sum9)
+        write.csv(tpm, file = "tpm.csv")
+        plot(tpm)
+
+
+```
+```{r unadjusted, echo = FALSE}
+# Model
+  elsa.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                    gen.inits = T, control = list(fnscale = 2000)) # scales at 2000
+# Results
+    tp <- pmatrix.msm(elsa.msm)
+    ti <- qmatrix.msm(elsa.msm) # All the extra code, if added w/default parameters, doesn't affect the values.
+      ti.matrix = matrix (data = ti, ncol = 5, byrow = TRUE)
+      ti.df <- as.data.frame(ti.matrix)
+    st <- sojourn.msm(elsa.msm)
+    efpt2 <- efpt.msm(elsa.msm, tostate = 2)
+    efpt3 <- efpt.msm(elsa.msm, tostate = 3)
+    write.csv(tp, file = "tp.csv")
+    write.csv(ti, file = "ti.csv")
+    write.csv(st, file = "st.csv")
+    write.csv(efpt2, file = "efpt2.csv")
+    write.csv(efpt3, file = "efpt3.csv")
+```
+```{r optim and extract, echo = FALSE}
+# Optimisation alternatives 
+    # Nelder-mead example in R: # Objective function to minimize
+      rosenbrock <- function(x) {
+        sum(100 * (x[2:length(x)] - x[1:(length(x) - 1)]^2)^2 + (1 - x[1:(length(x) - 1)])^2)
+      }
+      
+      # Nelder-Mead optimization function
+      nelderMead <- function(fn, x0, tol = 1e-6, maxiter = 1000) {
+        n <- length(x0)
+        simplex <- matrix(0, n+1, n)
+        simplex[1,] <- x0
+        alpha <- 1
+        beta <- 0.5
+        gamma <- 2
+        delta <- 0.5
+        for (i in 1:n) {
+          point <- x0
+          point[i] <- point[i] + 1
+          simplex[i+1,] <- point
+        }
+        fvalues <- apply(simplex, 1, fn)
+        ord <- order(fvalues)
+        fvalues <- fvalues[ord]
+        simplex <- simplex[ord,]
+        iter <- 0
+        while (iter < maxiter && max(abs(fvalues[1] - fvalues[-1])) > tol) {
+          iter <- iter + 1
+          xbar <- colMeans(simplex[-nrow(simplex),])
+          xr <- xbar + alpha * (xbar - simplex[nrow(simplex),])
+          fxr <- fn(xr)
+          if (fxr < fvalues[1]) {
+            xe <- xbar + gamma * (xr - xbar)
+            fxe <- fn(xe)
+            if (fxe < fxr) {
+              simplex[nrow(simplex),] <- xe
+              fvalues[nrow(simplex)] <- fxe
+            } else {
+              simplex[nrow(simplex),] <- xr
+              fvalues[nrow(simplex)] <- fxr
+            }
+          } else {
+            if (fxr < fvalues[nrow(simplex) - 1]) {
+              simplex[nrow(simplex),] <- xr
+              fvalues[nrow(simplex)] <- fxr
+            } else {
+              xc <- xbar + beta * (simplex[nrow(simplex),] - xbar)
+              fxc <- fn(xc)
+              if (fxc < fvalues[nrow(simplex)]) {
+                simplex[nrow(simplex),] <- xc
+                fvalues[nrow(simplex)] <- fxc
+              } else {
+                for (i in 2:(nrow(simplex))) {
+                  simplex[i,] <- simplex[1,] + delta * (simplex[i,] - simplex[1,])
+                  fvalues[i] <- fn(simplex[i,])
+                }
+              }
+            }
+          }
+          ord <- order(fvalues)
+          fvalues <- fvalues[ord]
+          simplex <- simplex[ord,]
+        }
+        return(list(par = simplex[1,], value = fvalues[1], iter = iter))
+      }
+
+# Example usage:
+  # result <- nelderMead(rosenbrock, c(0, 0))
+  # cat("Optimal Parameters:", result$par, "\n")
+  # cat("Optimal Value:", result$value, "\n")
+  # cat("Iterations:", result$iter, "\n")
+
+  # has context menu
+  # Compose a function to be minimized
+
+# Extractor function
+  qmatrix.msm(
+    elsa_r.msm,
+    covariates = 0,
+    sojourn = FALSE,
+    ci = c("delta", "normal", "bootstrap", "none"),
+    cl = 0.95,
+    B = 1000,
+    cores = NULL
+  )
+
+```
+```{r a priori adjusted, echo = FALSE}
+# Model 1: age and sex
+  rm(elsa_demo.msm)
+  elsa_demo.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                    gen.inits = T, control = list(fnscale = 20, maxit = 500), # converges at 4000, maxit 500
+                    covariates = ~ ragender + age10) 
+  # Results
+    demohr <- (hazard.msm(elsa_demo.msm))
+    demohr <- do.call(rbind.data.frame, demohr)
+# Model 2: age and sex and SES
+  rm(elsa_ses.msm)
+  elsa_ses.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                    gen.inits = T, control = list(fnscale = 4000, maxit = 500), # converges at 4000, maxit 500
+                    covariates = ~ ragender + age10 + region + raeducl + rlbrf_e) 
+  # Results
+    seshr <- (hazard.msm(elsa_ses.msm))
+
+    seshr <- do.call(rbind.data.frame, seshr)
+# Model 3: age and sex and wellbeing
+  rm(elsa_well.msm)
+  elsa_well.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                    gen.inits = T, control = list(fnscale = 3000, maxit = 500), # 
+                    covariates = ~ ragender + age10 + rlowermob + help + lone2)
+  # Results
+    wellhr <- (hazard.msm(elsa_well.msm))
+    wellhr <- do.call(rbind.data.frame, wellhr)
+    wellhr$ci <- confint(wellhr)
+    wellhr$confind <- wellhr$upper
+
+    print(wellhr$confind)
+    help(confind)
+    wellhr <- do.call(rbind.data.frame, wellhr)
+
+# Model 4: everything
+  #rm(elsa_all.msm)
+  elsa_all.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                    gen.inits = T, control = list(fnscale = 2500, maxit = 500), # doesn't scale at 4000 
+                    covariates = ~ ragender + age10 + region + raeducl + rlbrf_e + rlowermob + help + lone2)
+  # Results
+    allhr <- (hazard.msm(elsa_all.msm)) # list
+    allhr <- do.call(rbind.data.frame, allhr) # data frame
+
+# Compare results
+  # hr_adjusteds <- cbind(demohr, seshr, wellhr, allhr)
+  # create.workbook(hr_adjusteds, "hr_adjusteds.xlsx")  
+  # write.csv(hr_adjusteds, file = "hr_adjusteds.csv")
+     hr0 <- createWorkbook()
+      addWorksheet(hr0, sheetName = "Model 1") 
+      writeDataTable(hr0, sheet = "Model 1", x = (demohr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr0, sheetName = "Model 2")
+      writeDataTable(hr0, sheet = "Model 2", x = (seshr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr0, sheetName = "Model 3")
+      writeDataTable(hr0, sheet = "Model 3", x = (wellhr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr0, sheetName = "Model 4")
+      writeDataTable(hr0, sheet = "Model 4", x = (allhr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+     saveWorkbook(hr0, 'hr0.xlsx', overwrite = T)
+
+# And then compare fits and changes in HRs  for all covars by models? But is this pointless bc only age and sex will be able to show any change? but then could at least comprae to everything... So it would look like a table with lots of gaps... 
+
+```
+```{r fully adjusted, echo = FALSE}
+# Model
+  elsa_all.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                      gen.inits = T, control = list(fnscale = 4000), # scaling factor only used to help the optimization algorithm
+                      covariates = ~ ragender + age10 + region + # Demographics
+                                     rlbrf_e + raeducl + # SES
+                                     rlowermob + help + lone2) # wellbeing
+# Results
+  hr_all <- as.data.frame(hazard.msm(elsa_all.msm))
+  write.csv(hr_all, file = "hr_all.csv")
+```
+```{r covar individ models, echo = FALSE}
+# Individual covar models
+  # Age only
+    elsa_a.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                    gen.inits = T, control = list(fnscale = 6), # Converges at fnscale = 6
+                    covariates = ~ age10) 
+    # Results
+    ahr <- as.data.frame(hazard.msm(elsa_a.msm))
+    atp <- pmatrix.msm(elsa_a.msm)
+  
+  # Sex
+    elsa_s.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                    gen.inits = T, control = list(fnscale = 6), # Converges at fnscale = 6
+                    covariates = ~ ragender) 
+    # Results
+      shr <- as.data.frame(hazard.msm(elsa_s.msm))
+      stp <- pmatrix.msm(elsa_s.msm) 
+      # efpt_s <- efpt.msm(elsa_s.msm, tostate = 2)
+      efpt <- efpt.msm(elsa.msm, tostate = 2)
+  
+  # Difficulty
+    # elsa$rlowermob <- as.character(elsa$rlowermob)
+    elsa_d.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, method = "Nelder-Mead", control = list(fnscale = 1000, trace = 1, REPORT = 1, maxit = 5000), # Still didn't converge at 10,000
+                        covariates = ~ rlowermob) 
+      table(elsa$rlowermob)
+      typeof(elsa$rlowermob)
+      typeof(elsa$region)
+    # Results
+      dhr <- as.data.frame(hazard.msm(elsa_d.msm))
+      dtp <- pmatrix.msm(elsa_d.msm)
+ 
+  # Region
+    elsa_r.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 1000, trace=1, REPORT=1, maxit = 500), # Converged @ fnscale = 1000 with maxit = 500 w/o warnings about hessian matrix
+                        covariates = ~ region) # # + ragender + age10)       
+    # Results
+      rhr <- as.data.frame(hazard.msm(elsa_r.msm))
+      rtp <- pmatrix.msm(elsa_r.msm)
+      rsj <- sojourn.msm(elsa_r.msm) # may have to run separately for each region strata. 
+  
+  # Education
+    elsa_edu.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5), # converges at fnscale = 5
+                        covariates = ~ raeducl) # + ragender + age10) 
+    # Results
+      edhr <- as.data.frame(hazard.msm(elsa_edu.msm))
+      edtp <- pmatrix.msm(elsa_edu.msm)
+
+  # Employment
+    elsa_emp.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5), # converges at fnscale = 5
+                        covariates = ~ rlbrf_e) # + ragender + age10)  
+    # Results
+      ehr <- as.data.frame(hazard.msm(elsa_emp.msm))
+      etp <- pmatrix.msm(elsa_emp.msm)
+
+  # Help
+    elsa_h.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 6), # scales at 6 
+                        covariates = ~ help) # + ragender + age10) 
+    # Results
+      hhr <- as.data.frame(hazard.msm(elsa_h.msm))
+      htp <- pmatrix.msm(elsa_h.msm)
+
+  # Loneliness 
+    elsa_l.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 6), # scales at 6
+                        covariates = ~ lone2) # + ragender + age10) 
+    # Results 
+      lhr <- as.data.frame(hazard.msm(elsa_l.msm))
+      ltp <- pmatrix.msm(elsa_l.msm)
+      
+
+# Collate HRs 
+  # Write to excel
+    hr1 <- createWorkbook()
+      addWorksheet(hr1, sheetName = "Age") 
+      writeDataTable(hr1, sheet = "Age", x = (ahr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr1, sheetName = "Sex")
+      writeDataTable(hr1, sheet = "Sex", x = (shr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      # addWorksheet(hr1, sheetName = "Difficulty")
+      # writeDataTable(hr1, sheet = "Difficulty", x = (dhr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr1, sheetName = "Region")
+      writeDataTable(hr1, sheet = "Region", x = (rhr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr1, sheetName = "Education")
+      writeDataTable(hr1, sheet = "Education", x = (edhr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr1, sheetName = "Employment")
+      writeDataTable(hr1, sheet = "Employment", x = (ehr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr1, sheetName = "Help")
+      writeDataTable(hr1, sheet = "Help", x = (hhr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr1, sheetName = "Loneliness")
+      writeDataTable(hr1, sheet = "Loneliness", x = (lhr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+
+     saveWorkbook(hr1, 'hr1.xlsx', overwrite = T)
+
+```
+```{r covars basic adjusted, echo = FALSE}
+# Individual covar models, adjusted only for sex and age
+  # Sex and age
+    elsa_a.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                    gen.inits = T, control = list(fnscale = 6), # Converges at fnscale = 6
+                    covariates = ~ ragender + age10) 
+    # Results
+    ahr2 <- as.data.frame(hazard.msm(elsa_a.msm))
+    atp <- pmatrix.msm(elsa_a.msm)
+  
+  # Difficulty and sex and age
+    # # Subset dataset for just those with any mfd
+    #   delsa <- elsa[elsa$rlowermoba == '1.Yes', ]
+    #   nrow(delsa)
+    #   # Remove single waves
+    #     delsa <- delsa[delsa$idauniq %in% delsa$idauniq[duplicated(delsa$idauniq)],] 
+    #     delsa_inds <- unique(delsa$idauniq)
+    #     length(delsa_inds)
+    #     nrow(delsa)     
+    elsa_d.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, method = "Nelder-Mead", control = list(fnscale = 5, maxit = 1000),  
+                        #, trace = 1, REPORT = 1, maxit = 10000), # Still didn't converge at 10,000 # method = "Nelder-Mead", 
+                        covariates = ~ rlowermob + ragender + age10) 
+    help(optim)
+    # Results
+      dhr2 <- as.data.frame(hazard.msm(elsa_d.msm))
+      dtp2 <- pmatrix.msm(elsa_d.msm)
+ 
+  # Region and sex and age
+    elsa_r.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 1000, trace=1, REPORT=1, maxit = 500), # Converged @ fnscale = 1000 with maxit = 500 w/o warnings about hessian matrix
+                        covariates = ~ region + ragender + age10)       
+    # Results
+      rhr2 <- as.data.frame(hazard.msm(elsa_r.msm))
+      rtp2 <- pmatrix.msm(elsa_r.msm)
+  
+  # Education and sex and age
+    elsa_edu.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5), # converges at fnscale = 5
+                        covariates = ~ raeducl + ragender + age10) 
+    # Results
+      edhr2 <- as.data.frame(hazard.msm(elsa_edu.msm))
+      edtp2 <- pmatrix.msm(elsa_edu.msm)
+
+  # Employment and sex and age
+    elsa_emp.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 5), # converges at fnscale = 5
+                        covariates = ~ rlbrf_e + ragender + age10)  
+    # Results
+      ehr2 <- as.data.frame(hazard.msm(elsa_emp.msm))
+      etp2 <- pmatrix.msm(elsa_emp.msm)
+
+  # Help and sex and age
+    elsa_h.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 6), # scales at 6 
+                        covariates = ~ help + ragender + age10) 
+    # Results
+      hhr2 <- as.data.frame(hazard.msm(elsa_h.msm))
+      htp2 <- pmatrix.msm(elsa_h.msm)
+
+  # Loneliness and sex and age
+    elsa_l.msm <- msm(state ~ time, subject = idauniq, data = elsa, qmatrix = qt, 
+                        gen.inits = T, control = list(fnscale = 6), # scales at 6
+                        covariates = ~ lone2 + age10 + ragender) 
+    # Results 
+      lhr2 <- as.data.frame(hazard.msm(elsa_l.msm))
+      ltp2 <- pmatrix.msm(elsa_l.msm)
+      
+        # temporary change save fix 
+          lonehr <- createWorkbook()
+            addWorksheet(lonehr, sheetName = "Loneliness")
+            writeDataTable(lonehr, sheet = "Loneliness", x = (lhr2), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+            saveWorkbook(lonehr, 'lhr2.xlxs', overwrite = T)
+# Collate HRs 
+  # Write to excel
+    hr2 <- createWorkbook()
+      addWorksheet(hr2, sheetName = "Age") 
+      writeDataTable(hr2, sheet = "Age", x = (ahr2), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr2, sheetName = "Difficulty")
+      writeDataTable(hr2, sheet = "Difficulty", x = (dhr2), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr2, sheetName = "Region")
+      writeDataTable(hr2, sheet = "Region", x = (rhr2), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr2, sheetName = "Education")
+      writeDataTable(hr2, sheet = "Education", x = (edhr2), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr2, sheetName = "Employment")
+      writeDataTable(hr2, sheet = "Employment", x = (ehr2), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr2, sheetName = "Help")
+      writeDataTable(hr2, sheet = "Help", x = (hhr2), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+      addWorksheet(hr2, sheetName = "Loneliness")
+      writeDataTable(hr2, sheet = "Loneliness", x = (lhr2), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+
+     saveWorkbook(hr2, 'hr2.xlsx', overwrite = T)
+
+```
+```{r, compare model fit, echo = FALSE} 
+# Likelihood ratio test
+   lrtest.msm(elsa.msm, elsa_d.msm) 
+
+# Compare predictive ability of models (AIC) 
+    logliks <- c(logLik(elsa_all.msm), logLik(elsa_d.msm), logLik(elsa_d2.msm), logLik(elsa_h.msm)) #, logLik(elsa_ses.msm), logLik(elsa_h.msm), logLik(elsa_sc.msm))   
+    aic <- AIC(elsa_a.msm, elsa_s.msm, elsa_r.msm, elsa_edu.msm, elsa_emp.msm, elsa_h.msm, elsa_l.msm)
+    compare <- cbind(logliks, aic)
+    print(compare)
+  # Calculate % of variation in AIC scores
+    aics <- sum(aic$AIC)
+    nmsm <- nrow(aic)
+    aicp <- aics/nmsm
+    aicps <- aic$AIC/aicp
+    aic <- cbind(aic, aicps)
+    aic_p_diff <- max(aic$aicps) - min(aic$aicps) 
+```
+
+```{r plot CIs, echo = FALSE}
+# ggplot2 method
+  # Import ggplot2 library 
+  # library("ggplot2") 
+
+  # Creating Data 
+    gfg<-round(data.frame(x = 1:20, 
+            y = runif(20, 20, 40), 
+            low = runif(20, 0, 20), 
+            up = runif(20, 40, 50)), 4) 
+
+  # Creating scatter plot with its 
+  # confindence intervals 
+    ggplot(gfg, aes(x, y)) + geom_point() + 
+    geom_errorbar(aes(ymin = low, ymax = up))
+
+# other method
+  # Create Data 
+    gfg<-round(data.frame(x = 1:20, 
+                          y = runif(20, 20, 40), 
+                          low = runif(20, 0, 20), 
+                          up = runif(20, 40, 50)), 4) 
+      
+    # Create plotrix plot with confidence intervals 
+      plotCI(x = gfg$x, y = gfg$y, li = gfg$low, ui = gfg$up)
+  install.packages("plotrix")
+  library("plotrix")
+  plotCI(x = ahr2$states, y = ahr2$ragender2.woman.HR, li = ahr2$ragender2.woman.L, ui = ahr2$ragender2.womanU)
+
+  ahr2 <- as.data.frame(ahr2)
+  table(ahr2)
+  colnames(ahr2)
+  states <- c('1-2', '1-3', '2-3', '2-4', '3-2', '3-4', '4-2', '4-3')
+  ahr2 <- cbind(states, ahr2)
+
+
+```
+## JUNKS
+```{r results, echo = FALSE}
+## Types of results
+  # Get summary of model
+    # summary.msm(elsa_d.msm) # This seems to take ages and unsure what it provides
+
+  # Get transition probabilities
+    pmatrix.msm(elsa_d.msm)
+    pmatrix.msm(elsa_all.msm) 
+
+  # Get hazard ratios 
+    elsa_d_hr <- hazard.msm(elsa_d.msm)
+    elsa_ses_hr <- hazard.msm(elsa_ses.msm)
+    elsa_all_hr <- hazard.msm(elsa_all.msm)
+    write.table(elsa_d_hr, file = "elsa_d_hr.xlsx", sep = "\t", row.names = TRUE, col.names = TRUE) 
+    # why doesn't this work
+    # help(write.table)
+     r1 <- createWorkbook()
+     addWorksheet(r1, sheetName = "HRs") 
+     writeDataTable(r1, sheet = "HRs", x = as.data.frame(elsa_d_hr), colNames = T, rowNames = T, tableStyle = 'TableStyleLight11')
+     saveWorkbook(r1, 'r1.xlsx', overwrite = T)
+
+
+# Get sojourn time (how long people tend to stay in one state)
+    sojourn.msm(elsa_d.msm)
+
+      # And get confidence intervals for transition probabilities
+      pmatrix.msm(elsa.msm, ci='normal', B=100)
+      
+      # Total length of stay in states
+      totlos.msm(elsa_d.msm, t = 10)
+
+      # Expected first passage times (aka hitting time); time until the process first enters a given state or set of states
+      
+
+      # Prevalence of states over time
+      pdf('elsa_qt_msm.pdf')
+      plot.prevalence.msm(elsa_qt.msm) # Seems to be assuming everyone starts in state 1
+      dev.off()
+      
+      # Passage probabilities
+      ppass.msm(elsa_d.msm, t = 2) # % chance of experiencing state 2 or 3 from state 1 in x number of years
+
+      ## Adding in covars
+        # Hazard ratios for covariates for all states
+          print(elsa_d.msm, digits =2)
+          # Shows gender as ragender1 i.e. the hazard ratios if gender == 1 (female); hazard ratio is eg. risk if you're a woman / risk if you're a man. for ragender1 HR at 1.6, indicates 60% higher risk for women. 
+
+        # Transition probabilities with covariates
+          # Have to ask it to show cases where ragender1 == 0 or 1 i.e. is male or female
+          pmatrix.msm(elsa_d.msm, t = 5, covariates = list(ragender1 = F), ci = 'normal', B = 100)
+          pmatrix.msm(elsa_d.msm, t = 5, covariates = list(ragender1 = T), ci = 'normal', B = 100)
+
+        mans <- c()
+        womans <- c()
+        for (age in sort(unique(elsa$ragey))) {
+          x <- pmatrix.msm(elsa_d.msm, t = 5, covariates = list(ragey = age, ragender1 = F), ci = 'normal', B = 100)[1, 2]
+          mans <- c(mans, x[1])
+          y <- pmatrix.msm(elsa_d.msm, t = 5, covariates = list(ragey = age, ragender1 = T), ci = 'normal', B = 100)[1, 2]
+          womans <- c(womans, y[1])
+        }
+        plot(sort(unique(elsa$ragey)), mans, type = 'l', col = 'blue', ylim = c(0, 1))
+        lines(sort(unique(elsa$ragey)), womans, col = 'red')
+
+
+# Plots
+  # Load plotting library
+    install.packages("BoutrosLab.plotting.general")
+    library(BoutrosLab.plotting.general)
+
+  plot.data <- as.data.frame(elsa_d_hr$ragender)
+  plot.data['x'] <- 1:nrow(plot.data)
+    # To plot each covar and repeat the plot per transition, create a loop that grabs the eg first line from the HR tables, puts them next to eachother in a dataframe, and plot those. 
+
+    # ?create.scatterplot
+
+  create.scatterplot(
+    formula = HR ~ x,
+    data = plot.data, 
+    y.error.up = plot.data$U - plot.data$HR,
+    y.error.down = plot.data$HR - plot.data$L, 
+    main = 'ROC', 
+    xlab.label = 'Transitions',
+    ylab.label = 'Hazard Ratio',
+    xaxis.tck = c(0.5,0.5),
+    yaxis.tck = c(0.5,0.5),
+    add.grid = TRUE, 
+    add.text = TRUE,
+    text.labels = paste('Transition from ', c('1-2', '1-3', '1-4', 
+                                              '2-3', '2-4', 
+                                              '3-2', '3-3', 
+                                              '4-2', '4-3'), sep = '')
+  )
+
+# Prevalence of states over time 
+  plot.prevalence.msm(elsa_d.msm) 
+  # 'Expected' prevalence of state s at time t defined by the transition probabilities from state r to state s, averaged by the proportion who start in each state r. 
+  # Model fit can be checked by comparing the expected prevalence with the observed proportion in the data occupying each state at each time. 
+
+
+
+```
+
